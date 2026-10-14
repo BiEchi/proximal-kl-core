@@ -1,0 +1,178 @@
+# Single-host GSM8K example of the paper's controlled-rollout-staleness mechanism.
+# Public model/data and smaller batches/token limits; not the full benchmark recipe.
+# Run: python train.py --config configs/frpo.yaml
+experiment_name: gsm8k-frpo-controlled-lag4
+trial_name: seed1-lr5e-6
+seed: 1
+dynamic_bs: false
+enable_offload: false
+total_train_epochs: 10
+total_train_steps: 1000
+tokenizer_path: ${actor.path}
+
+cluster:
+  n_nodes: 1
+  n_gpus_per_node: 2
+  fileroot: ./logs/areal
+  name_resolve:
+    type: nfs
+    nfs_record_root: ./logs/name_resolve
+
+scheduler:
+  type: local
+
+rollout:
+  backend: sglang:d1p1t1
+  experiment_name: ${experiment_name}
+  trial_name: ${trial_name}
+  max_concurrent_rollouts: 16
+  queue_size: null
+  consumer_batch_size: ${train_dataset.batch_size}
+  max_head_offpolicyness: 4
+  # Fixed-lag FIFO: fill L+1 batches at startup, then retain L pending batches.
+  # Fresh-run lag ramps 0..4. Inspect version_stats/sample_staleness_theta_*.
+  # Runtime requires 1 <= ready_batch_buffer <= max_head_offpolicyness + 1.
+  ready_batch_buffer: 5
+  enable_rollout_tracing: false
+  scheduling_spec: ${actor.scheduling_spec}
+  fileroot: ${cluster.fileroot}
+  tokenizer_path: ${tokenizer_path}
+  dump_to_file: true
+
+gconfig:
+  n_samples: 4
+  seed: ${seed}
+  min_new_tokens: 0
+  max_new_tokens: 1024
+  greedy: false
+  temperature: 1.0
+
+actor:
+  backend: fsdp:d1p1t1
+  experiment_name: ${experiment_name}
+  trial_name: ${trial_name}
+  path: Qwen/Qwen3-1.7B
+  init_from_scratch: false
+  disable_dropout: true
+  gradient_checkpointing: true
+  dtype: bfloat16
+  attn_impl: flash_attention_2
+  mb_spec:
+    max_tokens_per_mb: 4096
+    packing_algorithm: ffd
+  optimizer:
+    type: adam
+    lr: 5.0e-6
+    weight_decay: 0.0
+    beta1: 0.9
+    beta2: 0.999
+    eps: 1.0e-8
+    lr_scheduler_type: constant
+    gradient_clipping: 1.0
+    warmup_steps_proportion: 0.0
+  # Effectively disable PPO clipping for ordinary ratios; no dual clipping.
+  eps_clip: 1000000.0
+  c_clip: null
+  importance_sampling_level: token
+  temperature: ${gconfig.temperature}
+  reward_scaling: 1.0
+  reward_bias: 0.0
+  kl_ctl: 0.3
+  ppo_n_minibatches: 4
+  recompute_logprob: true
+  use_decoupled_loss: true
+  use_frpo_loss_term: true
+  frpo_clip_eps: 0.05
+  frpo_normalize_tail: false
+  # Recomputed before each outer update; fixed across its four minibatches.
+  frpo_anchor: prox
+  frpo_tail_horizon: 0
+  frpo_tail_gamma: 1.0
+  frpo_use_tail_correction: true
+  frpo_use_local_correction: false
+  # Supplies the proximal/behavior factor. Combined with theta/proximal in
+  # the token surrogate, this gives theta/behavior unless the guard rejects it.
+  rejection_sampling:
+    level: token
+    action: mask
+    metric: ratio
+    upper: 1000000.0
+    lower: null
+  reward_norm:
+    mean_level: group
+    std_level: group
+    group_size: ${gconfig.n_samples}
+  adv_norm: null
+  weight_update_mode: xccl
+  max_new_tokens: ${gconfig.max_new_tokens}
+  scheduling_spec:
+    - task_type: worker
+      port_count: 2
+      gpu: 1
+      mem: 32
+      cmd: python3 -m areal.infra.rpc.rpc_server
+      env_vars: {}
+
+# The proximal anchor does not require a separate static-reference model.
+ref: null
+
+sglang:
+  model_path: ${actor.path}
+  random_seed: ${seed}
+  skip_tokenizer_init: true
+  dtype: ${actor.dtype}
+  max_running_requests: 16
+  context_length: 4096
+  mem_fraction_static: 0.8
+
+train_dataset:
+  batch_size: 16
+  shuffle: true
+  pin_memory: true
+  num_workers: 2
+  path: openai/gsm8k
+  type: rl
+  max_length: 1024
+
+valid_dataset:
+  batch_size: 16
+  shuffle: false
+  pin_memory: true
+  num_workers: 2
+  path: openai/gsm8k
+  type: rl
+  max_length: 1024
+
+saver:
+  experiment_name: ${experiment_name}
+  trial_name: ${trial_name}
+  fileroot: ${cluster.fileroot}
+  freq_epochs: 1
+  freq_steps: null
+  freq_secs: null
+
+recover:
+  mode: disabled
+  experiment_name: ${experiment_name}
+  trial_name: ${trial_name}
+  fileroot: ${cluster.fileroot}
+  freq_epochs: 1
+  freq_steps: null
+  freq_secs: null
+
+evaluator:
+  experiment_name: ${experiment_name}
+  trial_name: ${trial_name}
+  fileroot: ${cluster.fileroot}
+  freq_epochs: 1
+  freq_steps: null
+  freq_secs: null
+
+stats_logger:
+  experiment_name: ${experiment_name}
+  trial_name: ${trial_name}
+  fileroot: ${cluster.fileroot}
+  wandb:
+    mode: disabled
+
+perf_tracer: null

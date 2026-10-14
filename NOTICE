@@ -1,0 +1,12 @@
+Proximal KL with AReaL
+
+This distribution includes the AReaL framework with Proximal-KL/Future-KL loss
+and controlled rollout staleness modifications. The original AReaL license
+and copyright notice are retained in LICENSE:
+
+  Copyright 2025-2026 AReaL Team
+  https://github.com/areal-project/AReaL
+
+Source files retain their SPDX and third-party copyright notices. Changes to
+the framework include Future-KL credit, behavior correction controls, rollout
+buffering, and training metrics.
